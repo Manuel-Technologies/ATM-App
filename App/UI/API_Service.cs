@@ -3,10 +3,13 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 
+namespace ATMApp.Services;
+
 public sealed class APIService : IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly JsonSerializerOptions _serializerOptions;
+    private readonly bool _ownsHttpClient;
     private bool _disposed;
 
     public APIService(string baseUrl, HttpClient? httpClient = null)
@@ -17,6 +20,7 @@ public sealed class APIService : IDisposable
         }
 
         _httpClient = httpClient ?? new HttpClient();
+        _ownsHttpClient = httpClient is null;
         _httpClient.BaseAddress = new Uri(AppendTrailingSlash(baseUrl));
         _httpClient.DefaultRequestHeaders.Accept.Clear();
         _httpClient.DefaultRequestHeaders.Accept.Add(
@@ -105,7 +109,11 @@ public sealed class APIService : IDisposable
             return;
         }
 
-        _httpClient.Dispose();
+        if (_ownsHttpClient)
+        {
+            _httpClient.Dispose();
+        }
+
         _disposed = true;
         GC.SuppressFinalize(this);
     }
