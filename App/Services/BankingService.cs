@@ -3,6 +3,7 @@ using ATMApp.Models;
 namespace ATMApp.Services;
 
 public sealed class BankingService
+    : IAtmService
 {
     private readonly List<Account> _accounts;
 
@@ -40,10 +41,30 @@ public sealed class BankingService
         return account is not null;
     }
 
+    public Task<Account?> AuthenticateAsync(string cardNumber, string pin, CancellationToken cancellationToken = default)
+    {
+        TryAuthenticate(cardNumber, pin, out Account? account);
+        return Task.FromResult(account);
+    }
+
+    public Task<Account> GetAccountAsync(string accountNumber, CancellationToken cancellationToken = default)
+    {
+        Account account = _accounts.FirstOrDefault(candidate => candidate.AccountNumber == accountNumber)
+            ?? throw new InvalidOperationException("Account was not found.");
+
+        return Task.FromResult(account);
+    }
+
     public void Deposit(Account account, decimal amount)
     {
         account.Balance += amount;
         AddTransaction(account, "Deposit", amount, "Cash deposit");
+    }
+
+    public Task DepositAsync(Account account, decimal amount, CancellationToken cancellationToken = default)
+    {
+        Deposit(account, amount);
+        return Task.CompletedTask;
     }
 
     public bool TryWithdraw(Account account, decimal amount, out string message)
@@ -58,6 +79,16 @@ public sealed class BankingService
         AddTransaction(account, "Withdrawal", amount, "ATM cash withdrawal");
         message = "Withdrawal completed.";
         return true;
+    }
+
+    public Task<string> WithdrawAsync(Account account, decimal amount, CancellationToken cancellationToken = default)
+    {
+        if (!TryWithdraw(account, amount, out string message))
+        {
+            throw new InvalidOperationException(message);
+        }
+
+        return Task.FromResult(message);
     }
 
     public bool TryTransfer(Account sender, string recipientAccountNumber, decimal amount, out string message)
@@ -93,12 +124,33 @@ public sealed class BankingService
         return true;
     }
 
+    public Task<string> TransferAsync(
+        Account account,
+        string recipientAccountNumber,
+        decimal amount,
+        CancellationToken cancellationToken = default)
+    {
+        if (!TryTransfer(account, recipientAccountNumber, amount, out string message))
+        {
+            throw new InvalidOperationException(message);
+        }
+
+        return Task.FromResult(message);
+    }
+
     public IReadOnlyList<TransactionRecord> GetRecentTransactions(Account account)
     {
         return account.Transactions
             .OrderByDescending(transaction => transaction.Timestamp)
             .Take(5)
             .ToList();
+    }
+
+    public Task<IReadOnlyList<TransactionRecord>> GetRecentTransactionsAsync(
+        Account account,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(GetRecentTransactions(account));
     }
 
     private static void AddTransaction(Account account, string type, decimal amount, string description)

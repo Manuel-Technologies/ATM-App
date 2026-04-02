@@ -5,22 +5,22 @@ namespace ATMApp.UI;
 
 public static class AppScreen
 {
-    private static readonly BankingService BankingService = new();
+    private static readonly IAtmService AtmService = AtmServiceFactory.Create();
 
-    public static Task RunAsync()
+    public static async Task RunAsync()
     {
-        Console.Title = "TriemBank ATM";
         ShowWelcome();
+        Utility.WriteInfo(AtmServiceFactory.GetModeDescription());
+        Console.WriteLine();
 
-        Account? account = AuthenticateCustomer();
+        Account? account = await AuthenticateCustomerAsync();
         if (account is null)
         {
             Utility.WriteError("Authentication failed. Session ended.");
-            return Task.CompletedTask;
+            return;
         }
 
-        RunMainMenu(account);
-        return Task.CompletedTask;
+        await RunMainMenuAsync(account);
     }
 
     private static void ShowWelcome()
@@ -31,17 +31,17 @@ public static class AppScreen
         Console.WriteLine();
     }
 
-    private static Account? AuthenticateCustomer()
+    private static async Task<Account?> AuthenticateCustomerAsync()
     {
         for (int attempt = 1; attempt <= 3; attempt++)
         {
             string cardNumber = Utility.ReadRequiredString("Enter your ATM card number: ");
             string pin = Utility.ReadRequiredString("Enter your 4-digit PIN: ", isSecret: true);
 
-            if (BankingService.TryAuthenticate(cardNumber, pin, out Account? account))
+            Account? account = await TryAuthenticateAsync(cardNumber, pin);
+            if (account is not null)
             {
-                Utility.WriteSuccess(
-                    $"Welcome, {account!.AccountName}. Card: {Utility.MaskCardNumber(account.CardNumber)}");
+                Utility.WriteSuccess($"Welcome, {account.AccountName}. Card: {Utility.MaskCardNumber(account.CardNumber)}");
                 return account;
             }
 
@@ -52,7 +52,20 @@ public static class AppScreen
         return null;
     }
 
-    private static void RunMainMenu(Account account)
+    private static async Task<Account?> TryAuthenticateAsync(string cardNumber, string pin)
+    {
+        try
+        {
+            return await AtmService.AuthenticateAsync(cardNumber, pin);
+        }
+        catch (Exception ex)
+        {
+            Utility.WriteError($"Unable to reach the backend: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static async Task RunMainMenuAsync(Account account)
     {
         bool exitRequested = false;
 
@@ -76,19 +89,19 @@ public static class AppScreen
             switch (choice)
             {
                 case 1:
-                    ShowBalance(account);
+                    await ShowBalanceAsync(account);
                     break;
                 case 2:
-                    DepositFunds(account);
+                    await DepositFundsAsync(account);
                     break;
                 case 3:
-                    WithdrawFunds(account);
+                    await WithdrawFundsAsync(account);
                     break;
                 case 4:
-                    TransferFunds(account);
+                    await TransferFundsAsync(account);
                     break;
                 case 5:
-                    ShowMiniStatement(account);
+                    await ShowMiniStatementAsync(account);
                     break;
                 case 6:
                     exitRequested = true;
@@ -104,43 +117,57 @@ public static class AppScreen
         }
     }
 
-    private static void ShowBalance(Account account)
+    private static async Task ShowBalanceAsync(Account account)
     {
         Utility.WriteHeader("Balance");
+        Account? refreshedAccount = await TryExecuteServiceCallAsync(() => AtmService.GetAccountAsync(account.AccountNumber));
+        if (refreshedAccount is null)
+        {
+            return;
+        }
+
+        account.Balance = refreshedAccount.Balance;
         Console.WriteLine($"Current balance: {account.Balance:C}");
     }
 
-    private static void DepositFunds(Account account)
+    private static async Task DepositFundsAsync(Account account)
     {
         Utility.WriteHeader("Deposit");
         decimal amount = Utility.ReadAmount("Enter amount to deposit: ");
-        BankingService.Deposit(account, amount);
+        bool succeeded = await TryExecuteServiceCallAsync(() => AtmService.DepositAsync(account, amount));
+        if (!succeeded)
+        {
+            return;
+        }
+
         Utility.WriteSuccess($"Deposit successful. New balance: {account.Balance:C}");
     }
 
-    private static void WithdrawFunds(Account account)
+    private static async Task WithdrawFundsAsync(Account account)
     {
         Utility.WriteHeader("Withdraw");
         decimal amount = Utility.ReadAmount("Enter amount to withdraw: ");
 
-        if (!BankingService.TryWithdraw(account, amount, out string message))
+        string? message = await TryExecuteServiceCallAsync(() => AtmService.WithdrawAsync(account, amount));
+        if (message is null)
         {
-            Utility.WriteError(message);
             return;
         }
 
         Utility.WriteSuccess($"Withdrawal successful. New balance: {account.Balance:C}");
+        Utility.WriteInfo(message);
     }
 
-    private static void TransferFunds(Account account)
+    private static async Task TransferFundsAsync(Account account)
     {
         Utility.WriteHeader("Transfer");
         string recipientAccountNumber = Utility.ReadRequiredString("Enter destination account number: ");
         decimal amount = Utility.ReadAmount("Enter amount to transfer: ");
 
-        if (!BankingService.TryTransfer(account, recipientAccountNumber, amount, out string message))
+        string? message = await TryExecuteServiceCallAsync(
+            () => AtmService.TransferAsync(account, recipientAccountNumber, amount));
+        if (message is null)
         {
-            Utility.WriteError(message);
             return;
         }
 
@@ -148,10 +175,15 @@ public static class AppScreen
         Console.WriteLine($"New balance: {account.Balance:C}");
     }
 
-    private static void ShowMiniStatement(Account account)
+    private static async Task ShowMiniStatementAsync(Account account)
     {
         Utility.WriteHeader("Mini Statement");
-        IReadOnlyList<TransactionRecord> transactions = BankingService.GetRecentTransactions(account);
+        IReadOnlyList<TransactionRecord>? transactions =
+            await TryExecuteServiceCallAsync(() => AtmService.GetRecentTransactionsAsync(account));
+        if (transactions is null)
+        {
+            return;
+        }
 
         if (transactions.Count == 0)
         {
@@ -163,6 +195,33 @@ public static class AppScreen
         {
             Console.WriteLine(
                 $"{transaction.Timestamp:g} | {transaction.Type,-10} | {transaction.Amount,10:C} | {transaction.Description}");
+        }
+    }
+
+    private static async Task<bool> TryExecuteServiceCallAsync(Func<Task> operation)
+    {
+        try
+        {
+            await operation();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Utility.WriteError(ex.Message);
+            return false;
+        }
+    }
+
+    private static async Task<T?> TryExecuteServiceCallAsync<T>(Func<Task<T>> operation)
+    {
+        try
+        {
+            return await operation();
+        }
+        catch (Exception ex)
+        {
+            Utility.WriteError(ex.Message);
+            return default;
         }
     }
 }
